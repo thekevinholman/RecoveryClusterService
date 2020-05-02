@@ -1,0 +1,319 @@
+﻿<?xml version="1.0" encoding="utf-8"?><ManagementPack ContentReadable="true" SchemaVersion="2.0" OriginalSchemaVersion="1.1" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <Manifest>
+    <Identity>
+      <ID>Example.Cluster.Recovery</ID>
+      <Version>1.0.0.1</Version>
+    </Identity>
+    <Name>Example.Cluster.Recovery</Name>
+    <References>
+      <Reference Alias="SystemCenter">
+        <ID>Microsoft.SystemCenter.Library</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="MWCML">
+        <ID>Microsoft.Windows.Cluster.Management.Library</ID>
+        <Version>6.0.7291.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="MWCMM">
+        <ID>Microsoft.Windows.Cluster.Management.Monitoring</ID>
+        <Version>6.0.7291.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="Windows">
+        <ID>Microsoft.Windows.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="System">
+        <ID>System.Library</ID>
+        <Version>7.5.8501.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+      <Reference Alias="Health">
+        <ID>System.Health.Library</ID>
+        <Version>7.0.8433.0</Version>
+        <PublicKeyToken>31bf3856ad364e35</PublicKeyToken>
+      </Reference>
+    </References>
+  </Manifest>
+  <Monitoring>
+    <Rules>
+      <Rule ID="Example.Cluster.Recovery.AlertOnRecoveryFailure.Rule" Enabled="true" Target="MWCML!Microsoft.Windows.Cluster.Monitoring.Service" ConfirmDelivery="true" Remotable="true" Priority="Normal" DiscardLevel="100">
+        <Category>Alert</Category>
+        <DataSources>
+          <DataSource ID="DS" TypeID="Windows!Microsoft.Windows.EventProvider">
+            <ComputerName>$Target/Host/Property[Type="Windows!Microsoft.Windows.Computer"]/NetworkName$</ComputerName>
+            <LogName>Operations Manager</LogName>
+            <Expression>
+              <And>
+                <Expression>
+                  <SimpleExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="UnsignedInteger">EventDisplayNumber</XPathQuery>
+                    </ValueExpression>
+                    <Operator>Equal</Operator>
+                    <ValueExpression>
+                      <Value Type="UnsignedInteger">3758</Value>
+                    </ValueExpression>
+                  </SimpleExpression>
+                </Expression>
+                <Expression>
+                  <RegExExpression>
+                    <ValueExpression>
+                      <XPathQuery Type="String">EventDescription</XPathQuery>
+                    </ValueExpression>
+                    <Operator>ContainsSubstring</Operator>
+                    <Pattern>ClusterServiceRecovery</Pattern>
+                  </RegExExpression>
+                </Expression>
+              </And>
+            </Expression>
+          </DataSource>
+        </DataSources>
+        <WriteActions>
+          <WriteAction ID="Alert" TypeID="Health!System.Health.GenerateAlert">
+            <Priority>1</Priority>
+            <Severity>2</Severity>
+            <AlertName />
+            <AlertDescription />
+            <AlertOwner />
+            <AlertMessageId>$MPElement[Name="Example.Cluster.Recovery.AlertOnRecoveryFailure.Rule.AlertMessage"]$</AlertMessageId>
+            <AlertParameters>
+              <AlertParameter1>$Data[Default='']/EventDescription$</AlertParameter1>
+            </AlertParameters>
+            <Suppression />
+            <Custom1 />
+            <Custom2 />
+            <Custom3 />
+            <Custom4 />
+            <Custom5 />
+            <Custom6 />
+            <Custom7 />
+            <Custom8 />
+            <Custom9 />
+            <Custom10 />
+          </WriteAction>
+        </WriteActions>
+      </Rule>
+    </Rules>
+    <Recoveries>
+      <Recovery ID="Example.Cluster.Recovery.ClusterService.Recovery" Accessibility="Public" Enabled="true" Target="MWCML!Microsoft.Windows.Cluster.Monitoring.Service" Monitor="MWCMM!Microsoft.Windows.Cluster.Service.Monitor" ResetMonitor="false" ExecuteOnState="Error" Remotable="true" Timeout="300">
+        <Category>Custom</Category>
+        <WriteAction ID="Example.Cluster.Recovery.ClusterService.WriteAction" TypeID="Windows!Microsoft.Windows.ScriptWriteAction">
+          <ScriptName>ClusterServiceRecovery.vbs</ScriptName>
+          <Arguments />
+          <ScriptBody>'==========================================================================
+'
+' COMMENT: This is a recovery script to recovery the Cluster Service
+'
+'==========================================================================
+Option Explicit
+SetLocale("en-us")
+
+Dim StartTime,EndTime,sTime
+'Capture script start time
+StartTime = Now
+
+'Time that the script starts so that we can see how long it has been watching to see if the service stops again.
+Dim strTime
+strTime = Time  
+  
+Dim oAPI
+Set oAPI = CreateObject("MOM.ScriptAPI")
+Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3750,0,"Service Recovery script is starting")
+
+Dim strComputer, strService, strStartMode, strState, objCount, strClusterService
+'The script will always be run on the machine that generated the monitor error
+strComputer = "."
+   
+strClusterService = "ClusSvc"
+
+'Record the current state of each service before recovery in an event
+  Dim strClusterServicestate
+  ServiceState(strClusterService)
+  strClusterServicestate = strState
+  Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3751,0,"Current service state before recovery is: " &amp; strClusterService &amp; " : " &amp; strClusterServicestate)
+
+'Stop script if all services are running
+  If (strClusterServicestate = "Running") Then
+    Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3752,2,"All services were found to be already running, recovery should not run, ending script")
+    Wscript.Quit
+  End If
+
+'Check to see if a specific event has been logged previously that means this recovery script should NOT run if event is present
+'This section optional and not commonly used
+	Dim dtmStartDate, iCount, colEvents, objWMIService, objEvent
+'	Const CONVERT_TO_LOCAL_TIME = True
+'	 Set dtmStartDate = CreateObject("WbemScripting.SWbemDateTime")
+'	 dtmStartDate.SetVarDate dateadd("n", -60, now)' CONVERT_TO_LOCAL_TIME
+'	 
+'	 iCount = 0
+'	 Set objWMIService = GetObject("winmgmts:" _
+'	     &amp; "{impersonationLevel=impersonate,(Security)}!\\" _
+'	     &amp; strComputer &amp; "\root\cimv2")
+'	 Set colEvents = objWMIService.ExecQuery _
+'	     ("Select * from Win32_NTLogEvent Where Logfile = 'Application' and " _
+'	        &amp; "TimeWritten &gt; '" &amp; dtmStartDate &amp; "' and EventCode = 100") 
+'	 For Each objEvent In colEvents
+'		iCount = iCount+1  
+'	 Next
+'	If iCount =&gt; 1 Then
+'		EndTime = Now
+'       sTime = DateDiff("s", StartTime, EndTime)
+'		Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3761,2,"script found event which blocks execution of this recovery. Recovery will not run. Script ending after " &amp; sTime &amp; " seconds") 
+'		WScript.Quit
+'	ElseIf iCount &lt; 1 Then
+'		Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3762,0,"script did not find any blocking events.  Script will continue")
+'	End If
+
+'At least one service is stopped to cause this recovery, stopping all three services so we can start them in order
+'You would only use this section if you had multiple services and they needed to be started in a specific order
+'  Call oAPI.LogScriptEvent("ServiceRecovery.vbs",3753,0,"At least one service was found not running.  Recovery will run.  Attempting to stop all services now")
+'  ServiceStop(strService1)
+'  ServiceStop(strService2)
+'  ServiceStop(strService3)
+  
+'Check to make sure all services are actually in stopped state
+' Optional Wait 15 seconds for slow services to stop
+'  Wscript.Sleep 15000
+  ServiceState(strClusterService)
+  strClusterServicestate = strState
+
+'Stop script if all services are not stopped
+  If (strClusterServicestate &lt;&gt; "Stopped") Then
+    Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3754,2,"Recovery script found service is not in stopped state.  Manual intervention is required, ending script.  Current service state is: " &amp; strClusterService &amp; " : " &amp; strClusterServicestate)
+    Wscript.Quit
+  Else
+    Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3755,0,"Recovery script verified all services in stopped state.  Continuing.")
+  End If
+  
+'Start services in order.  
+  Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3756,0,"Attempting to start all services")
+	Dim errReturn 'Restart Services and watch to see if the command executed without error
+	ServiceStart(strClusterService)
+	Wscript.sleep 5000
+
+'Check service state to ensure all services started
+  ServiceState(strClusterService)
+  strClusterServicestate = strState
+	
+'Log success or fail of recovery
+  If (strClusterServicestate = "Running")  Then
+    Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3757,0,"All services were successfully started and then found to be running")
+  Else
+    Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3758,2,"Recovery script failed to start all services.  Manual intervention is required.  Current service state is: " &amp; strClusterService &amp; " : " &amp; strClusterServicestate)
+  End If	
+	
+'Check to see if this recovery script has been run three times in the last 60 minutes for loop detection
+	 Set dtmStartDate = CreateObject("WbemScripting.SWbemDateTime")
+	 dtmStartDate.SetVarDate dateadd("n", -60, now)' CONVERT_TO_LOCAL_TIME
+	 
+	 iCount = 0
+	 Set objWMIService = GetObject("winmgmts:" _
+	     &amp; "{impersonationLevel=impersonate,(Security)}!\\" _
+	     &amp; strComputer &amp; "\root\cimv2")
+	 Set colEvents = objWMIService.ExecQuery _
+	     ("Select * from Win32_NTLogEvent Where Logfile = 'Operations Manager' and " _
+	        &amp; "TimeWritten &gt; '" &amp; dtmStartDate &amp; "' and EventCode = 3750") 
+	 For Each objEvent In colEvents
+		iCount = iCount+1  
+	 Next
+	If iCount =&gt; 3 Then
+		EndTime = Now
+        sTime = DateDiff("s", StartTime, EndTime)
+		Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3759,2,"script restarted " &amp; strClusterService &amp; " service 3 or more times in the last hour, script ending after " &amp; sTime &amp; " seconds") 
+		WScript.Quit
+	ElseIf iCount &lt; 3 Then
+	        EndTime = Now
+        sTime = DateDiff("s", StartTime, EndTime)
+		Call oAPI.LogScriptEvent("ClusterServiceRecovery.vbs",3760,0,"script restarted " &amp; strClusterService &amp; " service less than 3 times in the last hour, script ending after " &amp; sTime &amp; " seconds")
+	End If
+
+Wscript.Quit
+
+
+'==================================================================================
+' Subroutine:	ServiceState
+' Purpose:	Gets the service state and startmode from WMI
+'==================================================================================
+Sub ServiceState(strService)
+	Dim objWMIService, colRunningServices, objService 
+	Set objWMIService = GetObject("winmgmts:" _
+	    &amp; "{impersonationLevel=impersonate}!\\" &amp; strComputer &amp; "\root\cimv2")
+	Set colRunningServices = objWMIService.ExecQuery _
+	    ("Select * from Win32_Service where Name = '"&amp; strService &amp; "'")
+	For Each objService in colRunningServices 
+	    strState = objService.State
+	    strStartMode = objService.StartMode
+	Next
+End Sub
+
+'==================================================================================
+' Subroutine:	ServiceStart
+' Purpose:	Starts a service
+'==================================================================================
+Sub ServiceStart(strService)
+	Dim objWMIService, colRunningServices, objService, colServiceList
+	Set objWMIService = GetObject("winmgmts:" _
+	    &amp; "{impersonationLevel=impersonate}!\\" &amp; strComputer &amp; "\root\cimv2")
+	Set colServiceList = objWMIService.ExecQuery _
+	    ("Select * from Win32_Service where Name='"&amp; strService &amp; "'")
+	For Each objService in colServiceList
+	    errReturn = objService.StartService()
+	Next
+End Sub
+
+'==================================================================================
+' Subroutine:	ServiceStop
+' Purpose:	Stops a service
+'==================================================================================
+Sub ServiceStop(strService)
+	Dim objWMIService, colRunningServices, objService, colServiceList
+	Set objWMIService = GetObject("winmgmts:" _
+	    &amp; "{impersonationLevel=impersonate}!\\" &amp; strComputer &amp; "\root\cimv2")
+	Set colServiceList = objWMIService.ExecQuery _
+	    ("Select * from Win32_Service where Name='"&amp; strService &amp; "'")
+	For Each objService in colServiceList
+	    errReturn = objService.StopService()
+	Next
+End Sub</ScriptBody>
+          <TimeoutSeconds>180</TimeoutSeconds>
+        </WriteAction>
+      </Recovery>
+    </Recoveries>
+    <Overrides>
+      <RecoveryPropertyOverride ID="OverrideForRecoveryMicrosoftWindowsClusterServiceRecoveryForContextMicrosoftWindowsClusterMonitoringService4268ab90fecf41679c58757b82faea47" Context="MWCML!Microsoft.Windows.Cluster.Monitoring.Service" Enforced="false" Recovery="MWCMM!Microsoft.Windows.Cluster.Service.Recovery" Property="Enabled">
+        <Value>false</Value>
+      </RecoveryPropertyOverride>
+      <MonitorPropertyOverride ID="OverrideForMonitorMicrosoftWindowsClusterServiceMonitorForContextMicrosoftWindowsClusterMonitoringServicea5884cd682c9440496eb7bda4d28b6bd" Context="MWCML!Microsoft.Windows.Cluster.Monitoring.Service" Enforced="false" Monitor="MWCMM!Microsoft.Windows.Cluster.Service.Monitor" Property="GenerateAlert">
+        <Value>false</Value>
+      </MonitorPropertyOverride>
+    </Overrides>
+  </Monitoring>
+  <Presentation>
+    <StringResources>
+      <StringResource ID="Example.Cluster.Recovery.AlertOnRecoveryFailure.Rule.AlertMessage" />
+    </StringResources>
+  </Presentation>
+  <LanguagePacks>
+    <LanguagePack ID="ENU" IsDefault="false">
+      <DisplayStrings>
+        <DisplayString ElementID="Example.Cluster.Recovery">
+          <Name>Example.Cluster.Recovery</Name>
+        </DisplayString>
+        <DisplayString ElementID="Example.Cluster.Recovery.ClusterService.Recovery">
+          <Name>ClusterServiceRecovery</Name>
+        </DisplayString>
+        <DisplayString ElementID="Example.Cluster.Recovery.AlertOnRecoveryFailure.Rule">
+          <Name>Example Cluster Service Failure</Name>
+        </DisplayString>
+        <DisplayString ElementID="Example.Cluster.Recovery.AlertOnRecoveryFailure.Rule.AlertMessage">
+          <Name>Example Cluster Service Failure</Name>
+          <Description>Event Description: {0}</Description>
+        </DisplayString>
+      </DisplayStrings>
+    </LanguagePack>
+  </LanguagePacks>
+</ManagementPack>
